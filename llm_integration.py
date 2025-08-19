@@ -8,49 +8,6 @@ except ImportError:
 import pandas as pd
 import json
 
-def generate_business_insights_with_llm(analysis_summary, hierarchical_results, impact_results, masked_issues):
-    """
-    Generate comprehensive business insights using Google Gemini 2.5 Pro
-    """
-    if not GEMINI_AVAILABLE:
-        return "Google Generative AI package not available. Please install with: `pip install google-generativeai`"
-    
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
-        
-        # Prepare analysis summary for LLM
-        prompt = f"""
-        You are a senior business analyst reviewing comprehensive data analysis results. Based on the following analysis outputs, provide actionable business insights and strategic recommendations.
-
-        ANALYSIS SUMMARY:
-        {analysis_summary}
-
-        KEY FINDINGS:
-        - Total metrics analyzed: {len(hierarchical_results['Metric'].unique()) if not hierarchical_results.empty else 0}
-        - Significant changes detected: {len(hierarchical_results[hierarchical_results.get('Significant_Change_Flag', False) == True]) if not hierarchical_results.empty else 0}
-        - Hidden issues found: {len(masked_issues) if masked_issues else 0}
-
-        TOP IMPACT CHANGES:
-        {impact_results.head(5).to_string() if not impact_results.empty else "No significant impact changes"}
-
-        MASKED ISSUES:
-        {json.dumps(masked_issues[:3], indent=2) if masked_issues else "No masked issues detected"}
-
-        Please provide:
-        1. **Executive Summary** (2-3 sentences): What's the overall business health?
-        2. **Key Insights** (3-5 bullet points): Most important findings
-        3. **Immediate Actions** (3-4 bullet points): What should be done this week?
-        4. **Strategic Recommendations** (2-3 bullet points): Long-term actions
-        5. **Risk Assessment** (1-2 sentences): What risks should be monitored?
-
-        Format your response in clear markdown with appropriate headers and bullet points.
-        """
-
-        response = model.generate_content(prompt)
-        return response.text
-
-    except Exception as e:
-        return f"Error generating LLM insights: {str(e)}"
 
 def generate_enhanced_root_cause_analysis(selected_change_row, multi_dim_narrative, cross_metric_narrative, hierarchical_results, full_df_summary, full_df=None, date_column=None):
     """
@@ -117,9 +74,10 @@ def generate_enhanced_root_cause_analysis(selected_change_row, multi_dim_narrati
         5. **Business Impact Assessment** (2-3 sentences): What this change means for the business
         6. **Monitoring Recommendations** (2-3 bullet points): What to watch going forward
 
-        Format your response in clear markdown with appropriate headers and bullet points.
-        Focus on actionable insights that a business team can use to make decisions.
-        ENSURE the Future Forecast bullet point is included in Supporting Evidence with specific numbers and ranges.
+        - Format your response in clear markdown with appropriate headers and bullet points.
+        - Focus on actionable insights that a business team can use to make decisions.
+        - ENSURE the Future Forecast bullet point is included in Supporting Evidence with specific numbers and ranges.
+        - Any Title header in the form of 'Comprehensive/Root Cause Analysis' or anything else with 'Root Cause Analysis' in the summary should not be included in the final output in the app.
         """
 
         response = model.generate_content(prompt)

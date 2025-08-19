@@ -10,11 +10,12 @@ from analysis_functions_updated import (
     detect_hidden_issues_advanced, get_business_context
 )
 import os
+from report_generation import generate_structured_json_output, generate_executive_summary_report
 
 # Optional import for Google Generative AI
 try:
     import google.generativeai as genai
-    from llm_integration import generate_business_insights_with_llm, generate_enhanced_root_cause_analysis, create_analysis_summary, create_dataframe_summary
+    from llm_integration import generate_enhanced_root_cause_analysis, create_analysis_summary, create_dataframe_summary
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -413,6 +414,83 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
         else:
             st.info("Not enough data to reliably calculate a long-term trend for this metric.")
 
+    # JSON Output and Executive Summary Section
+    st.header("📋 System Integration & Executive Summary")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🔗 Structured JSON Output")
+        st.markdown("**For system integration and API consumption**")
+        
+        if st.button("📊 Generate JSON Output", key="generate_json"):
+            with st.spinner("Generating structured JSON output..."):
+                try:
+                    # Generate JSON output
+                    json_output = generate_structured_json_output(
+                        st.session_state.hierarchical_results,
+                        st.session_state.impact_results,
+                        detect_masked_issues_improved(st.session_state.full_df_for_visualizations, st.session_state.dimensions, st.session_state.metrics, st.session_state.date_column),
+                        st.session_state.date_column,
+                        st.session_state.full_df_for_visualizations
+                    )
+                    
+                    st.code(json_output, language="json")
+                    
+                    # Download button for JSON
+                    st.download_button(
+                        label="💾 Download JSON",
+                        data=json_output,
+                        file_name=f"analysis_results_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error generating JSON output: {str(e)}")
+    
+    with col2:
+        st.subheader("📄 Executive Summary Report")
+        st.markdown("**Downloadable markdown report for executives**")
+        
+        if st.button("📝 Generate Executive Report", key="generate_report"):
+            with st.spinner("Generating executive summary report..."):
+                try:
+                    # Get business context summary if available
+                    business_context_summary = ""
+                    if use_llm and GEMINI_AVAILABLE:
+                        try:
+                            analysis_summary = create_analysis_summary(st.session_state.hierarchical_results, st.session_state.metrics, st.session_state.dimensions)
+                            impact_results = st.session_state.get('impact_results', pd.DataFrame())
+                            masked_issues = detect_masked_issues_improved(st.session_state.full_df_for_visualizations, st.session_state.dimensions, st.session_state.metrics, st.session_state.date_column)
+                            business_context_summary = generate_business_insights_with_llm(analysis_summary, st.session_state.hierarchical_results, impact_results, masked_issues)
+                        except:
+                            business_context_summary = "AI-enhanced insights unavailable."
+                    
+                    # Generate executive report
+                    executive_report = generate_executive_summary_report(
+                        st.session_state.hierarchical_results,
+                        st.session_state.impact_results,
+                        detect_masked_issues_improved(st.session_state.full_df_for_visualizations, st.session_state.dimensions, st.session_state.metrics, st.session_state.date_column),
+                        business_context_summary,
+                        use_llm and GEMINI_AVAILABLE
+                    )
+                    
+                    # Display preview
+                    st.markdown("**Report Preview:**")
+                    with st.expander("📖 View Full Report", expanded=False):
+                        st.markdown(executive_report)
+                    
+                    # Download button for report
+                    st.download_button(
+                        label="📥 Download Executive Report",
+                        data=executive_report,
+                        file_name=f"executive_summary_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.md",
+                        mime="text/markdown"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error generating executive report: {str(e)}")
+
 # Additional information
 st.sidebar.header("💡 About This Tool")
 st.sidebar.info(
@@ -520,12 +598,10 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
                     masked_issues = detect_masked_issues_improved(st.session_state.full_df_for_visualizations, st.session_state.dimensions, st.session_state.metrics, st.session_state.date_column)
                     
                     # Generate LLM insights
-                    llm_insights = generate_business_insights_with_llm(analysis_summary, st.session_state.hierarchical_results, impact_results, masked_issues)
-                    st.markdown(llm_insights)
+#                    llm_insights = generate_business_insights_with_llm(analysis_summary, st.session_state.hierarchical_results, impact_results, masked_issues)
+#                    st.markdown(llm_insights)
                     
-                # AI-Enhanced Deep Dive Analysis (moved under Business Context)
-                st.markdown("---")
-                st.markdown("### 🧠 AI-Enhanced Deep Dive Analysis")
+
                 
                 try:
                     with st.spinner("🤖 AI is conducting deep root cause analysis..."):
