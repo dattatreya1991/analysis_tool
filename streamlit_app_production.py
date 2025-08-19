@@ -9,6 +9,16 @@ from analysis_functions_updated import (
     perform_multi_dimensional_breakdown_advanced, perform_cross_metric_impact_analysis_advanced,
     detect_hidden_issues_advanced, get_business_context
 )
+import os
+
+# Optional import for Google Generative AI
+try:
+    import google.generativeai as genai
+    from llm_integration import generate_business_insights_with_llm, generate_enhanced_root_cause_analysis, create_analysis_summary, create_dataframe_summary
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    genai = None
 
 # Set page configuration
 st.set_page_config(page_title="Data Science Assessment Tool", layout="wide")
@@ -16,6 +26,29 @@ st.set_page_config(page_title="Data Science Assessment Tool", layout="wide")
 # Title
 st.title("📊 Data Science Assessment Tool")
 st.markdown("A **dataset-agnostic** analysis tool for detecting performance changes and identifying business drivers. Think of it as your data detective! 🕵️‍♀️")
+
+# LLM Configuration in sidebar
+st.sidebar.header("🤖 AI Enhancement")
+
+if not GEMINI_AVAILABLE:
+    st.sidebar.error("⚠️ Google Generative AI package not installed. Install with: `pip install google-generativeai`")
+    use_llm = False
+else:
+    use_llm = st.sidebar.toggle("Enable AI-Powered Insights", value=False, help="Use Google Gemini 2.5 Pro for enhanced business insights and root cause analysis")
+
+    if use_llm:
+        # Check for API key
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            st.sidebar.error("⚠️ GEMINI_API_KEY environment variable not found. Please set it to use AI features.")
+            use_llm = False
+        else:
+            try:
+                genai.configure(api_key=gemini_api_key)
+                st.sidebar.success("✅ AI features enabled")
+            except Exception as e:
+                st.sidebar.error(f"❌ Error configuring Gemini API: {str(e)}")
+                use_llm = False
 
 # Sidebar for file upload and configuration
 st.sidebar.header("⚙️ Configuration")
@@ -435,7 +468,7 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
         st.markdown("Let's dig deeper into why this change happened and what it means for your business.")
 
         # Multi-Dimensional Breakdown Section
-        st.subheader(f"🔍 Multi-Dimensional Breakdown for {selected_change_row['Metric']} in {selected_change_row['Dimension_Combination']}")
+        st.subheader("🔍 Multi-Dimensional Breakdown")
         st.markdown("This shows how other related metrics changed within the same segment.")
         
         try:
@@ -454,7 +487,7 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
             st.error(f"Error in multi-dimensional breakdown: {str(e)}")
 
         # Cross-Metric Impact Analysis Section
-        st.subheader(f"🔗 Cross-Metric Impact Analysis for {selected_change_row['Metric']} in {selected_change_row['Dimension_Combination']}")
+        st.subheader("🔗 Cross-Metric Impact Analysis")
         st.markdown("Understanding the upstream and downstream factors that influenced this change.")
         
         try:
@@ -473,29 +506,108 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
             st.error(f"Error in cross-metric impact analysis: {str(e)}")
 
         # Business Context and Recommendations Section
-        st.subheader("💡 Business Context and Recommendations")
-        st.markdown("Here are some possible business reasons and actionable recommendations for this change.")
+        if use_llm:
+            st.subheader("💡 Business Context and Recommendations (Powered by AI)")
+        else:
+            st.subheader("💡 Business Context and Recommendations")
         
-        try:
-            change_direction = "increase" if selected_change_row["Latest_WoW_Change"] > 0 else "decline"
-            business_context = get_business_context(selected_change_row["Metric"].lower(), change_direction)
+        if use_llm:
+            try:
+                with st.spinner("🤖 AI is analyzing all data to generate comprehensive business insights..."):
+                    # Create comprehensive analysis summary for LLM
+                    analysis_summary = create_analysis_summary(st.session_state.hierarchical_results, st.session_state.metrics, st.session_state.dimensions)
+                    impact_results = st.session_state.get('impact_results', pd.DataFrame())
+                    masked_issues = detect_masked_issues_improved(st.session_state.full_df_for_visualizations, st.session_state.dimensions, st.session_state.metrics, st.session_state.date_column)
+                    
+                    # Generate LLM insights
+                    llm_insights = generate_business_insights_with_llm(analysis_summary, st.session_state.hierarchical_results, impact_results, masked_issues)
+                    st.markdown(llm_insights)
+                    
+                # AI-Enhanced Deep Dive Analysis (moved under Business Context)
+                st.markdown("---")
+                st.markdown("### 🧠 AI-Enhanced Deep Dive Analysis")
+                
+                try:
+                    with st.spinner("🤖 AI is conducting deep root cause analysis..."):
+                        # Generate enhanced root cause analysis with forecasting
+                        enhanced_analysis = generate_enhanced_root_cause_analysis(
+                            selected_change_row, 
+                            multi_dim_narrative, 
+                            cross_metric_narrative, 
+                            st.session_state.hierarchical_results,
+                            create_dataframe_summary(st.session_state.full_df_for_visualizations),
+                            st.session_state.full_df_for_visualizations,  # Pass full dataframe for forecasting
+                            st.session_state.date_column  # Pass date column for forecasting
+                        )
+                        
+                        st.markdown(enhanced_analysis)
+                        
+                except Exception as e:
+                    st.error(f"Error generating enhanced root cause analysis: {str(e)}")
+                    st.markdown("The standard analysis sections above provide the available insights.")
+                    
+            except Exception as e:
+                st.error(f"Error generating AI insights: {str(e)}")
+                st.markdown("Falling back to standard business context analysis...")
+                # Fallback to original logic
+                change_direction = "increase" if selected_change_row["Latest_WoW_Change"] > 0 else "decline"
+                business_context = get_business_context(selected_change_row["Metric"].lower(), change_direction)
+                
+                if business_context["flag"] == "attention":
+                    st.error("🚨 **Requires Immediate Attention!**")
+                elif business_context["flag"] == "positive":
+                    st.success("✅ **Positive Trend to Amplify!**")
+                else:
+                    st.info("ℹ️ **Neutral Trend - Further Investigation Recommended.**")
+
+                st.markdown("**Possible Business Reasons:**")
+                for reason in business_context["reasons"]:
+                    st.markdown(f"- {reason}")
+
+                st.markdown("**Actionable Recommendations:**")
+                for rec in business_context["recommendations"]:
+                    st.markdown(f"- {rec}")
+        else:
+            st.markdown("Here are some possible business reasons and actionable recommendations for this change.")
             
-            if business_context["flag"] == "attention":
-                st.error("🚨 **Requires Immediate Attention!**")
-            elif business_context["flag"] == "positive":
-                st.success("✅ **Positive Trend to Amplify!**")
-            else:
-                st.info("ℹ️ **Neutral Trend - Further Investigation Recommended.**")
+            try:
+                change_direction = "increase" if selected_change_row["Latest_WoW_Change"] > 0 else "decline"
+                business_context = get_business_context(selected_change_row["Metric"].lower(), change_direction)
+                
+                if business_context["flag"] == "attention":
+                    st.error("🚨 **Requires Immediate Attention!**")
+                elif business_context["flag"] == "positive":
+                    st.success("✅ **Positive Trend to Amplify!**")
+                else:
+                    st.info("ℹ️ **Neutral Trend - Further Investigation Recommended.**")
 
-            st.markdown("**Possible Business Reasons:**")
-            for reason in business_context["reasons"]:
-                st.markdown(f"- {reason}")
+                st.markdown("**Possible Business Reasons:**")
+                for reason in business_context["reasons"]:
+                    st.markdown(f"- {reason}")
 
-            st.markdown("**Actionable Recommendations:**")
-            for rec in business_context["recommendations"]:
-                st.markdown(f"- {rec}")
-        except Exception as e:
-            st.error(f"Error in business context analysis: {str(e)}")
+                st.markdown("**Actionable Recommendations:**")
+                for rec in business_context["recommendations"]:
+                    st.markdown(f"- {rec}")
+            except Exception as e:
+                st.error(f"Error in business context analysis: {str(e)}")
+                business_context = get_business_context(selected_change_row["Metric"].lower(), change_direction)
+                
+                if business_context["flag"] == "attention":
+                    st.error("🚨 **Requires Immediate Attention!**")
+                elif business_context["flag"] == "positive":
+                    st.success("✅ **Positive Trend to Amplify!**")
+                else:
+                    st.info("ℹ️ **Neutral Trend - Further Investigation Recommended.**")
+
+                st.markdown("**Possible Business Reasons:**")
+                for reason in business_context["reasons"]:
+                    st.markdown(f"- {reason}")
+
+                st.markdown("**Actionable Recommendations:**")
+                for rec in business_context["recommendations"]:
+                    st.markdown(f"- {rec}")
+            except Exception as e:
+                st.error(f"Error in business context analysis: {str(e)}")
 
 
 
