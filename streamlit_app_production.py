@@ -99,6 +99,39 @@ if uploaded_file is None:
 # File is uploaded - proceed with analysis
 df = pd.read_csv(uploaded_file)
 
+# Performance optimization for large datasets
+if len(df) > 500000:  # 5 lakh rows
+    st.warning("Large dataset detected")
+    
+    # Sample data intelligently - keep recent data and sample older data
+    # First, try to identify date column for intelligent sampling
+    temp_date_col = None
+    for col in df.columns:
+        try:
+            pd.to_datetime(df[col])
+            temp_date_col = col
+            break
+        except:
+            continue
+    
+    if temp_date_col:
+        df[temp_date_col] = pd.to_datetime(df[temp_date_col])
+        df_sorted = df.sort_values(by=temp_date_col, ascending=False)
+        recent_data = df_sorted.head(100000)  # Keep recent 1 lakh rows
+        older_data = df_sorted.tail(len(df) - 100000)
+        
+        # Sample older data if it's still large
+        if len(older_data) > 200000:
+            older_data_sampled = older_data.sample(n=200000, random_state=42)
+            df = pd.concat([recent_data, older_data_sampled]).sort_values(by=temp_date_col)
+            st.info(f"📊 Dataset optimized: Using {len(df):,} rows (kept all recent data + sampled older data)")
+        else:
+            df = df_sorted
+    else:
+        # If no date column found, random sample
+        df = df.sample(n=300000, random_state=42)
+        st.info(f"📊 Dataset optimized: Using {len(df):,} rows (random sample)")
+
 # Display basic info about the dataset
 st.header("📋 Dataset Overview")
 st.write(f"Your dataset has **{df.shape[0]:,} rows** and **{df.shape[1]} columns**.")
@@ -131,6 +164,24 @@ st.sidebar.write(f"**Dimensions (categories):** `{', '.join(categorical_columns)
 # Allow user to modify the identification
 metrics = st.sidebar.multiselect("Which numbers do you want to analyze?", numeric_columns, default=numeric_columns)
 dimensions = st.sidebar.multiselect("Which categories do you want to break down by?", categorical_columns, default=categorical_columns[:4] if len(categorical_columns) >= 4 else categorical_columns)
+
+# Performance optimization for dimensions and metrics
+if len(dimensions) > 5:
+    st.sidebar.info("🔧 Performance optimization: Limiting to top 5 dimensions by data volume")
+    # Select top dimensions by data volume
+    dim_volumes = {}
+    for dim in dimensions:
+        dim_volumes[dim] = df[dim].nunique() * len(df)
+    
+    top_dimensions = sorted(dim_volumes.items(), key=lambda x: x[1], reverse=True)[:5]
+    dimensions = [dim[0] for dim in top_dimensions]
+    st.sidebar.write(f"**Selected dimensions:** {', '.join(dimensions)}")
+
+# Limit metrics if too many
+if len(metrics) > 8:
+    st.sidebar.info("🔧 Performance optimization: Limiting to top 8 metrics")
+    metrics = metrics[:8]
+    st.sidebar.write(f"**Selected metrics:** {', '.join(metrics)}")
 
 # Store in session state
 st.session_state.metrics = metrics
@@ -190,11 +241,29 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
     st.header("📈 Hierarchical Analysis: What's Changing?")
     st.markdown("I'm looking at how your numbers (metrics) are changing over time, both week-to-week and year-to-year, across different categories (dimensions).")
     
-    st.subheader("📊 Week-over-Week (WoW) and Year-over-Year (YoY) Changes by Level")
-    st.markdown("This table shows changes at different levels: Overall (everything combined), Level 1 (single categories), and Level 2 (category combinations).")
+    st.subheader("📊 Multi-Level Analysis Results")
+    st.markdown("""
+    This analysis examines changes at multiple levels of granularity:
+    - **Overall**: Everything combined across all dimensions
+    - **Level 1**: Single dimension breakdowns (up to 5 dimensions)
+    - **Level 2**: Two-dimension combinations (up to 20 combinations)
+    - **Level 3**: Three-dimension combinations (up to 10 combinations) 
+    - **Level 4**: Four-dimension combinations (up to 5 combinations)
+    
+    🔒 **Note**: User-level dimensions (user_id, customer_id, etc.) are automatically excluded to focus on business-level insights.
+    """)
+    
+    # Show level distribution
+    level_counts = hierarchical_results['Level'].value_counts()
+    st.write("**Analysis Coverage:**")
+    for level, count in level_counts.items():
+        st.write(f"• {level}: {count} combinations analyzed")
+    
+    st.subheader("📋 Detailed Results by Level")
+    st.markdown("This table shows changes at different levels with statistical significance testing.")
     
     # Show a sample of results with better formatting
-    display_df = hierarchical_results.head(20)  # Show first 20 results
+    display_df = hierarchical_results.head(30)  # Show first 30 results to include more levels
     st.dataframe(display_df.style.format({
         "Latest_WoW_Change": "{:.2f}%", 
         "Latest_YoY_Change": "{:.2f}%",
@@ -202,8 +271,8 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
         "P_Value": "{:.3f}"
     }))
     
-    if len(hierarchical_results) > 20:
-        st.info(f"Showing first 20 results out of {len(hierarchical_results)} total results.")
+    if len(hierarchical_results) > 30:
+        st.info(f"Showing first 30 results out of {len(hierarchical_results)} total results across all levels.")
     
     # Detect significant changes
     st.header("🚨 Significant Change Detection: Big Shifts!")
@@ -597,11 +666,6 @@ if st.session_state.analysis_completed and not st.session_state.hierarchical_res
                     impact_results = st.session_state.get('impact_results', pd.DataFrame())
                     masked_issues = detect_masked_issues_improved(st.session_state.full_df_for_visualizations, st.session_state.dimensions, st.session_state.metrics, st.session_state.date_column)
                     
-                    # Generate LLM insights
-#                    llm_insights = generate_business_insights_with_llm(analysis_summary, st.session_state.hierarchical_results, impact_results, masked_issues)
-#                    st.markdown(llm_insights)
-                    
-
                 
                 try:
                     with st.spinner("🤖 AI is conducting deep root cause analysis..."):

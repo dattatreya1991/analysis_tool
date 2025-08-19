@@ -23,17 +23,28 @@ def perform_t_test(current_value, previous_values, alpha=0.05):
     except Exception:
         return False, np.nan
 
-def perform_hierarchical_analysis_updated(df, dimensions, metrics, date_col, alpha=0.05, max_combinations=500):
-    """Updated hierarchical analysis with statistical significance testing"""
+def perform_hierarchical_analysis_updated(df, dimensions, metrics, date_col, alpha=0.05, max_combinations=200):
+    """Enhanced hierarchical analysis with statistical significance testing - supports up to Level 4"""
     results = []
     
-    # Start with overall aggregates
+    # Filter out user-level dimensions to avoid user-specific analysis
+    user_keywords = ['user', 'user_id', 'userid', 'customer_id', 'customerid', 'customer', 'client_id', 'clientid']
+    filtered_dimensions = [dim for dim in dimensions if not any(keyword in dim.lower() for keyword in user_keywords)]
+    
+    if len(filtered_dimensions) < len(dimensions):
+        excluded_dims = [dim for dim in dimensions if dim not in filtered_dimensions]
+        print(f"Excluded user-level dimensions: {excluded_dims}")
+    
+    dimensions = filtered_dimensions
+    
+    # Pre-compute overall data for all metrics at once
+    overall_grouped = df.groupby(date_col)[metrics].sum().reset_index()
+    
+    # Start with overall aggregates - vectorized processing
     for metric in metrics:
-        overall_df = df.groupby(date_col)[metric].sum().reset_index()
-        overall_df = calculate_wow_yoy(overall_df, date_col, metric)
-        
-        if len(overall_df) > 7:
-            latest_overall = overall_df.sort_values(by=date_col, ascending=False).iloc[0]
+        if len(overall_grouped) > 7:
+            overall_df = calculate_wow_yoy(overall_grouped[[date_col, metric]], date_col, metric)
+            latest_overall = overall_df.iloc[-1]  # Use iloc[-1] instead of sort
             previous_week_values = overall_df[metric].iloc[-8:-1]
             is_significant, p_value = perform_t_test(latest_overall[metric], previous_week_values, alpha)
             
@@ -48,15 +59,24 @@ def perform_hierarchical_analysis_updated(df, dimensions, metrics, date_col, alp
                 "P_Value": p_value
             })
 
-    # Single dimension analysis (Level 1)
-    for dim in dimensions[:4]:
+    # Single dimension analysis (Level 1) - enhanced to support up to 5 dimensions
+    for dim in dimensions[:5]:  # Increased from 3 to 5 dimensions
+        # Sample dimension values if too many (performance optimization)
+        unique_values = df[dim].unique()
+        if len(unique_values) > 20:  # Increased threshold
+            # Sample top values by total volume to focus on most important segments
+            top_values = df.groupby(dim)[metrics[0]].sum().nlargest(15).index.tolist()
+            unique_values = top_values
+        
         for metric in metrics:
+            # Pre-group all data for this dimension-metric combination
             dim_grouped = df.groupby([date_col, dim])[metric].sum().reset_index()
-            for dim_value in df[dim].unique():
+            
+            for dim_value in unique_values:
                 dim_subset = dim_grouped[dim_grouped[dim] == dim_value]
                 if len(dim_subset) > 7:
                     dim_subset = calculate_wow_yoy(dim_subset, date_col, metric)
-                    latest_data = dim_subset.sort_values(by=date_col, ascending=False).iloc[0]
+                    latest_data = dim_subset.iloc[-1]  # Use iloc[-1] instead of sort
                     previous_week_values = dim_subset[metric].iloc[-8:-1]
                     is_significant, p_value = perform_t_test(latest_data[metric], previous_week_values, alpha)
                     
@@ -71,31 +91,34 @@ def perform_hierarchical_analysis_updated(df, dimensions, metrics, date_col, alp
                         "P_Value": p_value
                     })
 
-    # Two dimension combinations (Level 2)
+    # Two dimension combinations (Level 2) - enhanced to support 20 combinations
     if len(dimensions) >= 2:
-        for i, dim1 in enumerate(dimensions[:3]):
-            for dim2 in dimensions[i+1:4]:
+        for i, dim1 in enumerate(dimensions[:4]):  # Increased from 2 to 4
+            for dim2 in dimensions[i+1:5]:  # Increased from 3 to 5
                 for metric in metrics:
+                    # Pre-compute combinations and sample intelligently
                     combo_grouped = df.groupby([date_col, dim1, dim2])[metric].sum().reset_index()
-                    unique_combos = df[[dim1, dim2]].drop_duplicates()
+                    
+                    # Get top combinations by latest value (more efficient than iterating all)
+                    latest_combos = combo_grouped.groupby([dim1, dim2])[metric].last().nlargest(20)  # Increased from 8 to 20
                     combo_count = 0
                     
-                    for _, combo_row in unique_combos.iterrows():
-                        if combo_count >= 20:
+                    for (val1, val2), _ in latest_combos.items():
+                        if combo_count >= 20:  # Increased limit to 20
                             break
                             
                         combo_subset = combo_grouped[
-                            (combo_grouped[dim1] == combo_row[dim1]) & 
-                            (combo_grouped[dim2] == combo_row[dim2])
+                            (combo_grouped[dim1] == val1) & 
+                            (combo_grouped[dim2] == val2)
                         ]
                         
                         if len(combo_subset) > 7:
                             combo_subset = calculate_wow_yoy(combo_subset, date_col, metric)
-                            latest_data = combo_subset.sort_values(by=date_col, ascending=False).iloc[0]
+                            latest_data = combo_subset.iloc[-1]  # Use iloc[-1] instead of sort
                             previous_week_values = combo_subset[metric].iloc[-8:-1]
                             is_significant, p_value = perform_t_test(latest_data[metric], previous_week_values, alpha)
                             
-                            combo_str = f"{combo_row[dim1]} x {combo_row[dim2]}"
+                            combo_str = f"{val1} x {val2}"
                             results.append({
                                 "Level": f"Level 2 ({dim1} x {dim2})",
                                 "Dimension_Combination": combo_str,
@@ -108,116 +131,213 @@ def perform_hierarchical_analysis_updated(df, dimensions, metrics, date_col, alp
                             })
                             combo_count += 1
 
+    # Three dimension combinations (Level 3) - NEW
+    if len(dimensions) >= 3:
+        for i, dim1 in enumerate(dimensions[:3]):
+            for j, dim2 in enumerate(dimensions[i+1:4]):
+                for dim3 in dimensions[i+j+2:4]:
+                    for metric in metrics:
+                        # Pre-compute combinations and sample intelligently
+                        combo_grouped = df.groupby([date_col, dim1, dim2, dim3])[metric].sum().reset_index()
+                        
+                        # Get top combinations by latest value - limit to top 10 for performance
+                        latest_combos = combo_grouped.groupby([dim1, dim2, dim3])[metric].last().nlargest(10)
+                        combo_count = 0
+                        
+                        for (val1, val2, val3), _ in latest_combos.items():
+                            if combo_count >= 10:  # Limit to 10 for Level 3
+                                break
+                                
+                            combo_subset = combo_grouped[
+                                (combo_grouped[dim1] == val1) & 
+                                (combo_grouped[dim2] == val2) &
+                                (combo_grouped[dim3] == val3)
+                            ]
+                            
+                            if len(combo_subset) > 7:
+                                combo_subset = calculate_wow_yoy(combo_subset, date_col, metric)
+                                latest_data = combo_subset.iloc[-1]
+                                previous_week_values = combo_subset[metric].iloc[-8:-1]
+                                is_significant, p_value = perform_t_test(latest_data[metric], previous_week_values, alpha)
+                                
+                                combo_str = f"{val1} x {val2} x {val3}"
+                                results.append({
+                                    "Level": f"Level 3 ({dim1} x {dim2} x {dim3})",
+                                    "Dimension_Combination": combo_str,
+                                    "Metric": metric,
+                                    "Latest_WoW_Change": latest_data["WoW_Change"] if not pd.isna(latest_data["WoW_Change"]) else 0,
+                                    "Latest_YoY_Change": latest_data["YoY_Change"] if not pd.isna(latest_data["YoY_Change"]) else 0,
+                                    "Latest_Value": latest_data[metric],
+                                    "Is_Statistically_Significant": is_significant,
+                                    "P_Value": p_value
+                                })
+                                combo_count += 1
+
+    # Four dimension combinations (Level 4) - NEW
+    if len(dimensions) >= 4:
+        for i, dim1 in enumerate(dimensions[:2]):  # Limit to first 2 for performance
+            for j, dim2 in enumerate(dimensions[i+1:3]):
+                for k, dim3 in enumerate(dimensions[i+j+2:4]):
+                    for dim4 in dimensions[i+j+k+3:4]:
+                        for metric in metrics:
+                            # Pre-compute combinations and sample intelligently
+                            combo_grouped = df.groupby([date_col, dim1, dim2, dim3, dim4])[metric].sum().reset_index()
+                            
+                            # Get top combinations by latest value - limit to top 5 for performance
+                            latest_combos = combo_grouped.groupby([dim1, dim2, dim3, dim4])[metric].last().nlargest(5)
+                            combo_count = 0
+                            
+                            for (val1, val2, val3, val4), _ in latest_combos.items():
+                                if combo_count >= 5:  # Limit to 5 for Level 4
+                                    break
+                                    
+                                combo_subset = combo_grouped[
+                                    (combo_grouped[dim1] == val1) & 
+                                    (combo_grouped[dim2] == val2) &
+                                    (combo_grouped[dim3] == val3) &
+                                    (combo_grouped[dim4] == val4)
+                                ]
+                                
+                                if len(combo_subset) > 7:
+                                    combo_subset = calculate_wow_yoy(combo_subset, date_col, metric)
+                                    latest_data = combo_subset.iloc[-1]
+                                    previous_week_values = combo_subset[metric].iloc[-8:-1]
+                                    is_significant, p_value = perform_t_test(latest_data[metric], previous_week_values, alpha)
+                                    
+                                    combo_str = f"{val1} x {val2} x {val3} x {val4}"
+                                    results.append({
+                                        "Level": f"Level 4 ({dim1} x {dim2} x {dim3} x {dim4})",
+                                        "Dimension_Combination": combo_str,
+                                        "Metric": metric,
+                                        "Latest_WoW_Change": latest_data["WoW_Change"] if not pd.isna(latest_data["WoW_Change"]) else 0,
+                                        "Latest_YoY_Change": latest_data["YoY_Change"] if not pd.isna(latest_data["YoY_Change"]) else 0,
+                                        "Latest_Value": latest_data[metric],
+                                        "Is_Statistically_Significant": is_significant,
+                                        "P_Value": p_value
+                                    })
+                                    combo_count += 1
+
     return pd.DataFrame(results)
 
 def rank_combinations(df, metric_col, change_col, top_n=5):
-    """Rank top and bottom performing combinations"""
+    """Rank top and bottom performing combinations - optimized"""
     df_clean = df[df[change_col].notna() & (df[change_col] != 0)]
     
     if len(df_clean[df_clean["Level"] != "Overall"]) >= top_n:
         df_clean = df_clean[df_clean["Level"] != "Overall"]
     
-    ranked_top = df_clean.sort_values(by=change_col, ascending=False).head(top_n)
-    ranked_bottom = df_clean.sort_values(by=change_col, ascending=True).head(top_n)
+    # Use nlargest/nsmallest for better performance on large datasets
+    ranked_top = df_clean.nlargest(top_n, change_col)
+    ranked_bottom = df_clean.nsmallest(top_n, change_col)
     return ranked_top, ranked_bottom
 
 def detect_significant_changes(df, metric_col, change_col, threshold=10, p_value_threshold=0.05):
-    """Detect significant changes based on threshold and statistical significance"""
-    df["Significant_Change_Flag"] = False
-    df["Statistical_Significance_Flag"] = False
-
-    # Threshold-based flagging
-    df.loc[abs(df[change_col]) >= threshold, "Significant_Change_Flag"] = True
-
-    # Statistical significance flagging
-    df.loc[df["P_Value"] < p_value_threshold, "Statistical_Significance_Flag"] = True
-
+    """Detect significant changes - vectorized operations for better performance"""
+    # Use vectorized operations instead of iterative assignment
+    df["Significant_Change_Flag"] = np.abs(df[change_col]) >= threshold
+    df["Statistical_Significance_Flag"] = df["P_Value"] < p_value_threshold
     return df
 
 def detect_masked_issues_improved(df, dimensions, metrics, date_col, change_type="WoW_Change"):
-    """Improved masked issue detection with more robust logic to ensure detection"""
+    """Optimized masked issue detection for large datasets"""
     masked_issues = []
+    
+    # Pre-compute overall metrics for all at once
+    overall_grouped = df.groupby(date_col)[metrics].sum().reset_index()
 
     for metric in metrics:
-        overall_metric_df = df.groupby(date_col)[metric].sum().reset_index()
-        if len(overall_metric_df) < 8:
+        if len(overall_grouped) < 8:
             continue
             
-        overall_metric_df = calculate_wow_yoy(overall_metric_df, date_col, metric)
+        overall_metric_df = calculate_wow_yoy(overall_grouped[[date_col, metric]], date_col, metric)
         latest_overall_change = overall_metric_df[change_type].iloc[-1] if not overall_metric_df.empty else np.nan
 
         if pd.isna(latest_overall_change):
             continue
-            
-        # Relaxing overall_change_threshold and segment_change_threshold for better detection
-        # The overall change should be relatively small, but not necessarily close to zero
-        # A 5% overall change could still mask larger offsetting changes
-        if abs(latest_overall_change) < 5.0: # Overall change must be small (less than 5.0%)
-            # Check each dimension for offsetting trends
-            for dim in dimensions:
-                if dim != date_col:
-                    grouped_by_dim = df.groupby([date_col, dim])[metric].sum().reset_index()
-                    
-                    segment_changes = []
-                    for segment_name in grouped_by_dim[dim].unique():
-                        segment_df = grouped_by_dim[grouped_by_dim[dim] == segment_name]
-                        if len(segment_df) >= 8:
-                            segment_df = calculate_wow_yoy(segment_df, date_col, metric)
-                            latest_segment_change = segment_df[change_type].iloc[-1]
-                            # Segment changes must be significant enough to be considered offsetting
-                            # Increased sensitivity for segment changes
-                            if not pd.isna(latest_segment_change) and abs(latest_segment_change) >= 2.0: # Segment change must be at least 2%
-                                segment_changes.append({
-                                    'segment': segment_name,
-                                    'change': latest_segment_change
-                                })
 
-                    # Look for offsetting trends: at least one positive and one negative significant change
-                    positive_changes = [s for s in segment_changes if s['change'] > 0]
-                    negative_changes = [s for s in segment_changes if s['change'] < 0]
+        # Only check if overall change is small (potential masking) - performance optimization
+        if abs(latest_overall_change) < 5:
+            # Sample dimensions for performance - only check first 2 dimensions
+            for dim in dimensions[:2]:
+                unique_values = df[dim].unique()
+                if len(unique_values) > 15:
+                    # Sample top values by volume for performance
+                    top_values = df.groupby(dim)[metric].sum().nlargest(10).index.tolist()
+                    unique_values = top_values
+                
+                # Pre-group data for efficiency
+                dim_grouped = df.groupby([date_col, dim])[metric].sum().reset_index()
+                segment_changes = []
+                
+                for dim_value in unique_values:
+                    dim_subset = dim_grouped[dim_grouped[dim] == dim_value]
+                    if len(dim_subset) >= 8:
+                        dim_subset = calculate_wow_yoy(dim_subset, date_col, metric)
+                        latest_change = dim_subset[change_type].iloc[-1]
+                        if not pd.isna(latest_change) and abs(latest_change) >= 2.0:
+                            segment_changes.append({
+                                'segment': dim_value,
+                                'change': latest_change
+                            })
+                
+                # Look for offsetting trends: at least one positive and one negative significant change
+                positive_changes = [s for s in segment_changes if s['change'] > 0]
+                negative_changes = [s for s in segment_changes if s['change'] < 0]
+                
+                # Check for masking - if segments have high variance but overall is stable
+                if positive_changes and negative_changes:
+                    # Sort to pick the most impactful positive and negative for the message
+                    positive_changes.sort(key=lambda x: x['change'], reverse=True)
+                    negative_changes.sort(key=lambda x: x['change'])
                     
-                    # Ensure there are significant positive and negative changes that are large enough
-                    if positive_changes and negative_changes: # Check if both lists are not empty
-                        # Sort to pick the most impactful positive and negative for the message
-                        positive_changes.sort(key=lambda x: x['change'], reverse=True)
-                        negative_changes.sort(key=lambda x: x['change'])
-                        
-                        masked_issues.append({
-                            "Metric": metric,
-                            "Dimension": dim,
-                            "Positive_Segment": positive_changes[0]['segment'],
-                            "Positive_Change": positive_changes[0]['change'],
-                            "Negative_Segment": negative_changes[0]['segment'],
-                            "Negative_Change": negative_changes[0]['change'],
-                            "Overall_Change": latest_overall_change,
-                            "Issue": f"Masked issue in {metric}: Overall {change_type} is {latest_overall_change:.2f}%, but {dim} segments show offsetting changes: {positive_changes[0]['segment']} (+{positive_changes[0]['change']:.1f}%) vs {negative_changes[0]['segment']} ({negative_changes[0]['change']:.1f}%)"
-                        })
+                    masked_issues.append({
+                        "Metric": metric,
+                        "Dimension": dim,
+                        "Positive_Segment": positive_changes[0]['segment'],
+                        "Positive_Change": positive_changes[0]['change'],
+                        "Negative_Segment": negative_changes[0]['segment'],
+                        "Negative_Change": negative_changes[0]['change'],
+                        "Overall_Change": latest_overall_change,
+                        "Issue": f"Masked issue in {metric}: Overall {change_type} is {latest_overall_change:.2f}%, but {dim} segments show offsetting changes: {positive_changes[0]['segment']} (+{positive_changes[0]['change']:.1f}%) vs {negative_changes[0]['segment']} ({negative_changes[0]['change']:.1f}%)"
+                    })
 
     return masked_issues
 
 def calculate_impact(df, metric_col, change_col, metric_value_col, business_criticality_weights):
-    """Calculate business impact"""
-    def calc_impact(row):
-        if pd.isna(row[change_col]) or pd.isna(row[metric_value_col]) or row[change_col] == 0:
-            return 0
-        impact = abs(row[change_col] / 100) * (row[metric_value_col] / 1000) * business_criticality_weights.get(row["Metric"], 1)
-        return max(impact, 0.01)
+    """Calculate business impact - vectorized for better performance"""
+    # Vectorized impact calculation
+    df["Impact"] = 0.0
     
-    df["Impact"] = df.apply(calc_impact, axis=1)
+    # Create masks for valid data
+    valid_mask = df[change_col].notna() & df[metric_value_col].notna() & (df[change_col] != 0)
+    
+    # Vectorized calculation for all rows at once
+    for metric, weight in business_criticality_weights.items():
+        metric_mask = valid_mask & (df["Metric"] == metric)
+        if metric_mask.any():
+            df.loc[metric_mask, "Impact"] = (
+                np.abs(df.loc[metric_mask, change_col] / 100) * 
+                (df.loc[metric_mask, metric_value_col] / 1000) * 
+                weight
+            )
+    
+    # Set minimum impact for valid entries
+    df.loc[valid_mask & (df["Impact"] == 0), "Impact"] = 0.01
     return df
 
 def prioritize_findings(df, metrics_of_interest, top_n=5):
-    """Prioritize findings by business impact"""
-    df_filtered = df[df["Impact"] > 0]
-    
+    """Prioritize findings by business impact - optimized"""
     prioritized_results = pd.DataFrame()
+    
     for metric in metrics_of_interest:
-        if metric in df_filtered["Metric"].values:
-            metric_df = df_filtered[df_filtered["Metric"] == metric].sort_values(by="Impact", ascending=False).head(top_n)
-            prioritized_results = pd.concat([prioritized_results, metric_df])
+        if metric in df["Metric"].values:
+            # Use nlargest for better performance
+            metric_df = df[df["Metric"] == metric].nlargest(top_n, "Impact")
+            prioritized_results = pd.concat([prioritized_results, metric_df], ignore_index=True)
     
     if prioritized_results.empty:
-        prioritized_results = df_filtered.sort_values(by="Impact", ascending=False).head(top_n)
+        # If no specific metrics found, return top findings overall
+        prioritized_results = df.nlargest(top_n, "Impact")
     
     return prioritized_results
 
